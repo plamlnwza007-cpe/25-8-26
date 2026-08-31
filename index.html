@@ -4,8 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hands-free Media Player</title>
-  
-  <!-- MediaPipe Face Detection Library -->
+
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
 
@@ -17,6 +16,7 @@
       --accent-color: #38bdf8;
       --status-active: #22c55e;
       --status-inactive: #ef4444;
+      --status-warning: #fbbf24;
     }
 
     body {
@@ -40,7 +40,6 @@
       gap: 16px;
     }
 
-    /* ซ่อน video element ของกล้องไว้เบื้องหลัง */
     #webcam { display: none; }
 
     .video-card {
@@ -54,6 +53,15 @@
       width: 100%;
       display: block;
       background-color: #000;
+    }
+
+    .track-title {
+      text-align: center;
+      padding: 8px;
+      font-size: 0.9rem;
+      color: var(--accent-color);
+      background: var(--card-bg);
+      margin-top: -4px;
     }
 
     .status-panel {
@@ -80,6 +88,14 @@
 
     .active { color: var(--status-active); }
     .inactive { color: var(--status-inactive); }
+    .warning { color: var(--status-warning); }
+
+    .sensor-note {
+      font-size: 0.75rem;
+      color: #94a3b8;
+      text-align: center;
+      line-height: 1.5;
+    }
 
     button {
       padding: 16px;
@@ -92,23 +108,32 @@
       cursor: pointer;
       width: 100%;
     }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
 
   <div class="container">
     <h2>Hands-free Player</h2>
-    
-    <!-- กล้องรับภาพลับหลัง -->
+    <p class="sensor-note">
+      📷 กล้อง: มองจอ = เล่น / ละสายตา = หยุด<br>
+      📱 เอียงเบา = ปรับเสียง / เอียงแรงค้างไว้ = ข้ามเพลง
+    </p>
+
+    <!-- กล้องรับภาพลับหลัง สำหรับตรวจจับใบหน้าเท่านั้น ไม่แสดงผล -->
     <video id="webcam" playsinline></video>
 
-    <!-- เครื่องเล่นวิดีโอหลัก -->
     <div class="video-card">
-      <video id="media-player" loop playsinline muted controls>
-        <source src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" type="video/mp4">
+      <video id="media-player" playsinline muted controls>
+        <source src="" type="video/mp4">
         เบราว์เซอร์ของคุณไม่รองรับการเล่นวิดีโอ
       </video>
     </div>
+    <div class="track-title" id="track-title">กำลังโหลด...</div>
 
     <div class="status-panel">
       <div class="status-item">
@@ -119,68 +144,132 @@
         <div>Gyroscope (Gamma)</div>
         <div id="tilt-status" class="status-value">0°</div>
       </div>
-      <div class="status-item" style="grid-column: span 2;">
+      <div class="status-item">
         <div>ระดับเสียง (จากการเอียง)</div>
         <div id="volume-status" class="status-value">50%</div>
       </div>
+      <div class="status-item">
+        <div>คำสั่งข้ามเพลง</div>
+        <div id="skip-status" class="status-value">รอคำสั่ง</div>
+      </div>
     </div>
 
-    <button onclick="startApp()">เปิดใช้งานเซ็นเซอร์คู่นี้</button>
+    <button id="start-btn" onclick="startApp()">เปิดใช้งานเซ็นเซอร์คู่นี้</button>
   </div>
 
   <script>
     const mediaPlayer = document.getElementById('media-player');
     const webcamElement = document.getElementById('webcam');
-    
-    let lastTiltTime = 0;
+    const trackTitleEl = document.getElementById('track-title');
+    const skipStatusEl = document.getElementById('skip-status');
+    const startBtn = document.getElementById('start-btn');
+
+    // --- Playlist ตัวอย่าง ---
+    const playlist = [
+      { title: "Big Buck Bunny", src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" },
+      { title: "Elephants Dream", src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4" },
+      { title: "Sintel", src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4" }
+    ];
+    let currentTrackIndex = 0;
+
+    // สถานะสำหรับ gyroscope-based skip
+    const SKIP_THRESHOLD = 45;      // องศาที่ถือว่า "เอียงแรง"
+    const SKIP_HOLD_TIME = 900;     // ต้องเอียงค้างไว้กี่ ms ถึงจะสั่งข้าม
+    let tiltStartTime = null;
+    let tiltDirectionAtStart = null;
+    let skipCooldown = false;       // กันข้ามรัวๆ หลังจากข้ามไปแล้ว 1 ครั้ง
+
     let isFaceDetected = false;
 
+    function loadTrack(index, autoplay = false) {
+      currentTrackIndex = (index + playlist.length) % playlist.length;
+      const track = playlist[currentTrackIndex];
+      mediaPlayer.querySelector('source').src = track.src;
+      mediaPlayer.load();
+      trackTitleEl.innerText = `🎵 ${currentTrackIndex + 1}/${playlist.length} — ${track.title}`;
+      if (autoplay && isFaceDetected) {
+        mediaPlayer.play().catch(e => console.log("Autoplay ถูกบล็อก:", e));
+      }
+    }
+
+    function skipTrack(direction) {
+      // direction: 1 = ถัดไป, -1 = ก่อนหน้า
+      loadTrack(currentTrackIndex + direction, true);
+      skipStatusEl.innerText = direction === 1 ? "⏭ ข้ามไปเพลงถัดไป" : "⏮ ย้อนเพลงก่อนหน้า";
+      skipStatusEl.className = "status-value active";
+
+      // ตั้ง cooldown กันข้ามซ้ำขณะยังเอียงค้างอยู่
+      skipCooldown = true;
+      setTimeout(() => {
+        skipCooldown = false;
+        skipStatusEl.innerText = "รอคำสั่ง";
+        skipStatusEl.className = "status-value";
+      }, 1500);
+    }
+
     async function startApp() {
-      // 1. ขอสิทธิ์ Gyroscope / DeviceOrientation
-      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        const permission = await DeviceOrientationEvent.requestPermission();
-        if (permission === 'granted') {
+      startBtn.disabled = true;
+      startBtn.innerText = "กำลังเริ่มระบบ...";
+
+      // 1. ขอสิทธิ์ DeviceOrientation (จำเป็นบน iOS)
+      try {
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+          const permission = await DeviceOrientationEvent.requestPermission();
+          if (permission === 'granted') {
+            window.addEventListener('deviceorientation', handleOrientation);
+          } else {
+            alert("ไม่ได้รับสิทธิ์ Gyroscope — ฟีเจอร์ปรับเสียง/ข้ามเพลงด้วยการเอียงจะใช้ไม่ได้");
+          }
+        } else {
           window.addEventListener('deviceorientation', handleOrientation);
         }
-      } else {
-        window.addEventListener('deviceorientation', handleOrientation);
+      } catch (err) {
+        console.error("Gyroscope permission error:", err);
       }
 
       // 2. ตั้งค่า MediaPipe Face Detection
-      const faceDetection = new FaceDetection({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-      });
+      try {
+        const faceDetection = new FaceDetection({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+        });
 
-      faceDetection.setOptions({
-        modelSelection: 0, // 0: สแกนระยะใกล้ (กล้องหน้ามือถือ)
-        minDetectionConfidence: 0.6
-      });
+        faceDetection.setOptions({
+          modelSelection: 0,
+          minDetectionConfidence: 0.6
+        });
 
-      faceDetection.onResults(onFaceResults);
+        faceDetection.onResults(onFaceResults);
 
-      // 3. เริ่มส่งเฟรมจากกล้องหน้าเข้า Face Detection
-      const camera = new Camera(webcamElement, {
-        onFrame: async () => {
-          await faceDetection.send({ image: webcamElement });
-        },
-        width: 320,
-        height: 240
-      });
+        const camera = new Camera(webcamElement, {
+          onFrame: async () => {
+            await faceDetection.send({ image: webcamElement });
+          },
+          width: 320,
+          height: 240
+        });
 
-      await camera.start();
+        await camera.start();
+        startBtn.innerText = "เซ็นเซอร์ทำงานแล้ว ✅";
+      } catch (err) {
+        console.error("Camera start failed:", err);
+        alert("เปิดกล้องไม่ได้: " + err.message + "\nตรวจสอบว่าเปิดผ่าน HTTPS และอนุญาตสิทธิ์กล้องแล้ว");
+        startBtn.disabled = false;
+        startBtn.innerText = "เปิดใช้งานเซ็นเซอร์คู่นี้ (ลองใหม่)";
+      }
+
+      loadTrack(0);
     }
 
-    // --- เซ็นเซอร์ตัวที่ 1: ตรวจจับใบหน้าเพื่อสั่ง Play/Pause ---
+    // --- เซ็นเซอร์ที่ 1: กล้อง -> Play/Pause ---
     function onFaceResults(results) {
       const faceStatusEl = document.getElementById('face-status');
-      
+
       if (results.detections && results.detections.length > 0) {
         isFaceDetected = true;
         faceStatusEl.innerText = "กำลังมองจอ (Play)";
         faceStatusEl.className = "status-value active";
 
-        // เล่นวิดีโอต่อเมื่อตรวจเจอใบหน้า
-        if (mediaPlayer.paused) {
+        if (mediaPlayer.paused && mediaPlayer.querySelector('source').src) {
           mediaPlayer.play().catch(e => console.log("User gesture required"));
         }
       } else {
@@ -188,28 +277,54 @@
         faceStatusEl.innerText = "ละสายตา (Pause)";
         faceStatusEl.className = "status-value inactive";
 
-        // หยุดวิดีโอเมื่อไม่อยู่หน้าจอ
         if (!mediaPlayer.paused) {
           mediaPlayer.pause();
         }
       }
     }
 
-    // --- เซ็นเซอร์ตัวที่ 2: Gyroscope ตรวจจับการเอียงเพื่อปรับระดับเสียง ---
+    // --- เซ็นเซอร์ที่ 2: Gyroscope -> ปรับเสียง (เอียงเบา) หรือข้ามเพลง (เอียงแรงค้าง) ---
     function handleOrientation(event) {
-      // event.gamma คือการเอียงเครื่อง ซ้าย (-90) / ขวา (+90)
-      let gamma = event.gamma; 
+      let gamma = event.gamma; // ซ้าย (-90) / ขวา (+90)
       if (gamma === null) return;
 
       document.getElementById('tilt-status').innerText = `${Math.round(gamma)}°`;
 
-      // ปรับระดับเสียงตามมุมเอียง (-30° ถึง +30°)
-      // เอียงซ้าย = ลดเสียง, เอียงขวา = เพิ่มเสียง
-      let clampedGamma = Math.max(-30, Math.min(30, gamma));
-      let volume = (clampedGamma + 30) / 60; // แปลงค่าเป็นช่วง 0.0 - 1.0
+      const absGamma = Math.abs(gamma);
 
-      mediaPlayer.volume = volume;
-      document.getElementById('volume-status').innerText = `${Math.round(volume * 100)}%`;
+      if (absGamma >= SKIP_THRESHOLD) {
+        // --- โซนเอียงแรง: นับเวลาค้างเพื่อสั่งข้ามเพลง ---
+        const direction = gamma > 0 ? 1 : -1;
+
+        if (tiltStartTime === null || tiltDirectionAtStart !== direction) {
+          // เพิ่งเริ่มเอียงแรง หรือเปลี่ยนทิศทาง -> เริ่มจับเวลาใหม่
+          tiltStartTime = Date.now();
+          tiltDirectionAtStart = direction;
+        } else if (!skipCooldown && Date.now() - tiltStartTime >= SKIP_HOLD_TIME) {
+          skipTrack(direction);
+          tiltStartTime = null; // รีเซ็ต ต้องปล่อยแล้วเอียงใหม่ถึงจะข้ามอีกครั้ง
+        }
+
+        skipStatusEl.innerText = skipCooldown
+          ? skipStatusEl.innerText
+          : `กำลังค้าง (${direction === 1 ? "→ ถัดไป" : "← ก่อนหน้า"})`;
+        skipStatusEl.className = "status-value warning";
+
+      } else {
+        // --- โซนเอียงเบา: ปรับระดับเสียงต่อเนื่อง ---
+        tiltStartTime = null;
+        tiltDirectionAtStart = null;
+        if (!skipCooldown) {
+          skipStatusEl.innerText = "รอคำสั่ง";
+          skipStatusEl.className = "status-value";
+        }
+
+        let clampedGamma = Math.max(-30, Math.min(30, gamma));
+        let volume = (clampedGamma + 30) / 60;
+
+        mediaPlayer.volume = volume;
+        document.getElementById('volume-status').innerText = `${Math.round(volume * 100)}%`;
+      }
     }
   </script>
 </body>
