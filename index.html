@@ -40,7 +40,18 @@
       gap: 16px;
     }
 
-    #webcam { display: none; }
+    /* แก้ไข: ห้ามใช้ display:none กับกล้อง เพราะมือถือ (โดยเฉพาะ iOS)
+       จะไม่ decode เฟรมวิดีโอที่ไม่ได้ถูก render จริง ทำให้ videoWidth/Height = 0
+       ใช้เทคนิคย่อเหลือ 1px แล้วดันออกนอกจอแทน เพื่อให้ยัง render อยู่จริง */
+    #webcam {
+      position: fixed;
+      top: -9999px;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0.01;
+      pointer-events: none;
+    }
 
     .video-card {
       background-color: var(--card-bg);
@@ -97,6 +108,18 @@
       line-height: 1.5;
     }
 
+    .debug-log {
+      background: #000;
+      color: #4ade80;
+      font-family: monospace;
+      font-size: 0.7rem;
+      padding: 8px;
+      border-radius: 8px;
+      max-height: 100px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
     button {
       padding: 16px;
       font-size: 1rem;
@@ -124,8 +147,8 @@
       📱 เอียงเบา = ปรับเสียง / เอียงแรงค้างไว้ = ข้ามเพลง
     </p>
 
-    <!-- กล้องรับภาพลับหลัง สำหรับตรวจจับใบหน้าเท่านั้น ไม่แสดงผล -->
-    <video id="webcam" playsinline></video>
+    <!-- กล้องรับภาพลับหลัง สำหรับตรวจจับใบหน้าเท่านั้น -->
+    <video id="webcam" playsinline autoplay muted></video>
 
     <div class="video-card">
       <video id="media-player" playsinline muted controls>
@@ -154,6 +177,8 @@
       </div>
     </div>
 
+    <div class="debug-log" id="debug-log">รอเริ่มระบบ...</div>
+
     <button id="start-btn" onclick="startApp()">เปิดใช้งานเซ็นเซอร์คู่นี้</button>
   </div>
 
@@ -163,6 +188,13 @@
     const trackTitleEl = document.getElementById('track-title');
     const skipStatusEl = document.getElementById('skip-status');
     const startBtn = document.getElementById('start-btn');
+    const debugLogEl = document.getElementById('debug-log');
+
+    function logDebug(msg) {
+      const time = new Date().toLocaleTimeString();
+      debugLogEl.innerText = `[${time}] ${msg}\n` + debugLogEl.innerText;
+      console.log(msg);
+    }
 
     // --- Playlist ตัวอย่าง ---
     const playlist = [
@@ -172,12 +204,11 @@
     ];
     let currentTrackIndex = 0;
 
-    // สถานะสำหรับ gyroscope-based skip
-    const SKIP_THRESHOLD = 45;      // องศาที่ถือว่า "เอียงแรง"
-    const SKIP_HOLD_TIME = 900;     // ต้องเอียงค้างไว้กี่ ms ถึงจะสั่งข้าม
+    const SKIP_THRESHOLD = 45;
+    const SKIP_HOLD_TIME = 900;
     let tiltStartTime = null;
     let tiltDirectionAtStart = null;
-    let skipCooldown = false;       // กันข้ามรัวๆ หลังจากข้ามไปแล้ว 1 ครั้ง
+    let skipCooldown = false;
 
     let isFaceDetected = false;
 
@@ -188,17 +219,15 @@
       mediaPlayer.load();
       trackTitleEl.innerText = `🎵 ${currentTrackIndex + 1}/${playlist.length} — ${track.title}`;
       if (autoplay && isFaceDetected) {
-        mediaPlayer.play().catch(e => console.log("Autoplay ถูกบล็อก:", e));
+        mediaPlayer.play().catch(e => logDebug("Autoplay ถูกบล็อก: " + e.message));
       }
     }
 
     function skipTrack(direction) {
-      // direction: 1 = ถัดไป, -1 = ก่อนหน้า
       loadTrack(currentTrackIndex + direction, true);
       skipStatusEl.innerText = direction === 1 ? "⏭ ข้ามไปเพลงถัดไป" : "⏮ ย้อนเพลงก่อนหน้า";
       skipStatusEl.className = "status-value active";
 
-      // ตั้ง cooldown กันข้ามซ้ำขณะยังเอียงค้างอยู่
       skipCooldown = true;
       setTimeout(() => {
         skipCooldown = false;
@@ -210,36 +239,51 @@
     async function startApp() {
       startBtn.disabled = true;
       startBtn.innerText = "กำลังเริ่มระบบ...";
+      logDebug("เริ่มขอสิทธิ์เซ็นเซอร์...");
 
-      // 1. ขอสิทธิ์ DeviceOrientation (จำเป็นบน iOS)
+      // 1. ขอสิทธิ์ DeviceOrientation (จำเป็นบน iOS 13+)
       try {
         if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
           const permission = await DeviceOrientationEvent.requestPermission();
           if (permission === 'granted') {
             window.addEventListener('deviceorientation', handleOrientation);
+            logDebug("Gyroscope: ได้รับสิทธิ์แล้ว");
           } else {
-            alert("ไม่ได้รับสิทธิ์ Gyroscope — ฟีเจอร์ปรับเสียง/ข้ามเพลงด้วยการเอียงจะใช้ไม่ได้");
+            logDebug("Gyroscope: ถูกปฏิเสธสิทธิ์");
           }
         } else {
           window.addEventListener('deviceorientation', handleOrientation);
+          logDebug("Gyroscope: ใช้งานได้ (ไม่ต้องขอสิทธิ์)");
         }
       } catch (err) {
-        console.error("Gyroscope permission error:", err);
+        logDebug("Gyroscope error: " + err.message);
       }
 
-      // 2. ตั้งค่า MediaPipe Face Detection
+      // 2. ขอสิทธิ์กล้องแบบ explicit ก่อน (ช่วยให้ error ชัดเจนกว่าปล่อยให้ Camera util จัดการเอง)
       try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: 320, height: 240 }
+        });
+        webcamElement.srcObject = stream;
+        await webcamElement.play();
+        logDebug("กล้อง: ได้รับสิทธิ์และเริ่ม stream แล้ว");
+
+        // 3. ตั้งค่า MediaPipe Face Detection
         const faceDetection = new FaceDetection({
           locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
         });
 
         faceDetection.setOptions({
           modelSelection: 0,
-          minDetectionConfidence: 0.6
+          minDetectionConfidence: 0.5
         });
 
-        faceDetection.onResults(onFaceResults);
+        faceDetection.onResults((results) => {
+          logDebug(`ตรวจพบใบหน้า: ${results.detections?.length ?? 0}`);
+          onFaceResults(results);
+        });
 
+        // 4. ใช้ Camera util ส่งเฟรมจาก webcamElement ที่ stream ทำงานอยู่แล้ว
         const camera = new Camera(webcamElement, {
           onFrame: async () => {
             await faceDetection.send({ image: webcamElement });
@@ -250,11 +294,13 @@
 
         await camera.start();
         startBtn.innerText = "เซ็นเซอร์ทำงานแล้ว ✅";
+        logDebug("MediaPipe: เริ่มส่งเฟรมแล้ว");
       } catch (err) {
-        console.error("Camera start failed:", err);
-        alert("เปิดกล้องไม่ได้: " + err.message + "\nตรวจสอบว่าเปิดผ่าน HTTPS และอนุญาตสิทธิ์กล้องแล้ว");
+        logDebug("กล้อง ERROR: " + err.name + " — " + err.message);
+        alert("เปิดกล้องไม่ได้: " + err.message + "\n\nตรวจสอบว่า:\n1. เปิดผ่าน HTTPS\n2. อนุญาตสิทธิ์กล้องแล้ว\n3. ไม่มีแอปอื่นใช้กล้องอยู่");
         startBtn.disabled = false;
         startBtn.innerText = "เปิดใช้งานเซ็นเซอร์คู่นี้ (ลองใหม่)";
+        return;
       }
 
       loadTrack(0);
@@ -270,7 +316,7 @@
         faceStatusEl.className = "status-value active";
 
         if (mediaPlayer.paused && mediaPlayer.querySelector('source').src) {
-          mediaPlayer.play().catch(e => console.log("User gesture required"));
+          mediaPlayer.play().catch(e => logDebug("Play ล้มเหลว: " + e.message));
         }
       } else {
         isFaceDetected = false;
@@ -285,7 +331,7 @@
 
     // --- เซ็นเซอร์ที่ 2: Gyroscope -> ปรับเสียง (เอียงเบา) หรือข้ามเพลง (เอียงแรงค้าง) ---
     function handleOrientation(event) {
-      let gamma = event.gamma; // ซ้าย (-90) / ขวา (+90)
+      let gamma = event.gamma;
       if (gamma === null) return;
 
       document.getElementById('tilt-status').innerText = `${Math.round(gamma)}°`;
@@ -293,16 +339,14 @@
       const absGamma = Math.abs(gamma);
 
       if (absGamma >= SKIP_THRESHOLD) {
-        // --- โซนเอียงแรง: นับเวลาค้างเพื่อสั่งข้ามเพลง ---
         const direction = gamma > 0 ? 1 : -1;
 
         if (tiltStartTime === null || tiltDirectionAtStart !== direction) {
-          // เพิ่งเริ่มเอียงแรง หรือเปลี่ยนทิศทาง -> เริ่มจับเวลาใหม่
           tiltStartTime = Date.now();
           tiltDirectionAtStart = direction;
         } else if (!skipCooldown && Date.now() - tiltStartTime >= SKIP_HOLD_TIME) {
           skipTrack(direction);
-          tiltStartTime = null; // รีเซ็ต ต้องปล่อยแล้วเอียงใหม่ถึงจะข้ามอีกครั้ง
+          tiltStartTime = null;
         }
 
         skipStatusEl.innerText = skipCooldown
@@ -311,7 +355,6 @@
         skipStatusEl.className = "status-value warning";
 
       } else {
-        // --- โซนเอียงเบา: ปรับระดับเสียงต่อเนื่อง ---
         tiltStartTime = null;
         tiltDirectionAtStart = null;
         if (!skipCooldown) {
